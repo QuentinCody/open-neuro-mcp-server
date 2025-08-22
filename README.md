@@ -1,4 +1,6 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+# OpenNeuro MCP Server
+
+An MCP (Model Context Protocol) server that provides GraphQL query access to the OpenNeuro neuroimaging dataset API. OpenNeuro is a free and open platform for sharing MRI, MEG, EEG, iEEG, and ECoG data.
 
 ## License and Citation
 
@@ -10,51 +12,122 @@ If you use this software in a research project that leads to a publication, pres
 ### For commercial/non-academic use:
 Commercial and non-academic use follows the standard MIT License terms without the citation requirement.
 
-By using this software, you agree to these terms. See [LICENSE.md](LICENSE.md) for the complete license text.This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers. 
+By using this software, you agree to these terms. See [LICENSE.md](LICENSE.md) for the complete license text.
 
-## Get started: 
+## Features
 
-[![Deploy to Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/ai/tree/main/demos/remote-mcp-authless)
+- **GraphQL Query Tool**: Execute GraphQL queries against the OpenNeuro API
+- **Schema Introspection**: Discover available fields and operations
+- **Dataset Access**: Query neuroimaging datasets, snapshots, and file listings
+- **No Authentication Required**: Access public OpenNeuro data without API keys
 
-This will deploy your MCP server to a URL like: `remote-mcp-server-authless.<your-account>.workers.dev/sse`
+## Installation & Development
 
-Alternatively, you can use the command line below to get the remote MCP Server created on your local machine:
+1. Clone this repository:
 ```bash
-npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/remote-mcp-authless
+git clone https://github.com/quentincody/open-neuro-mcp-server.git
+cd open-neuro-mcp-server
 ```
 
-## Customizing your MCP Server
+2. Install dependencies:
+```bash
+npm install
+```
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`. 
+3. Start the development server:
+```bash
+npm run dev
+```
 
-## Connect to Cloudflare AI Playground
+The server will be available at `http://localhost:8787/sse`
 
-You can connect to your MCP server from the Cloudflare AI Playground, which is a remote MCP client:
+## Deployment
 
-1. Go to https://playground.ai.cloudflare.com/
-2. Enter your deployed MCP server URL (`remote-mcp-server-authless.<your-account>.workers.dev/sse`)
-3. You can now use your MCP tools directly from the playground!
+Deploy to Cloudflare Workers:
+```bash
+npm run deploy
+```
 
-## Connect Claude Desktop to your MCP server
+Your MCP server will be deployed to: `open-neuro-mcp-server.quentincody.workers.dev/sse`
 
-You can also connect to your remote MCP server from local MCP clients, by using the [mcp-remote proxy](https://www.npmjs.com/package/mcp-remote). 
+## Usage
 
-To connect to your MCP server from Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config.
+### Connect to Claude Desktop
 
-Update with this configuration:
+To connect this MCP server to Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and edit your Claude Desktop configuration.
+
+In Claude Desktop, go to Settings > Developer > Edit Config and add:
 
 ```json
 {
   "mcpServers": {
-    "calculator": {
+    "openneuro": {
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://localhost:8787/sse"  // or remote-mcp-server-authless.your-account.workers.dev/sse
+        "https://open-neuro-mcp-server.quentincody.workers.dev/sse"
       ]
     }
   }
 }
 ```
 
-Restart Claude and you should see the tools become available. 
+For local development, use:
+```json
+{
+  "mcpServers": {
+    "openneuro": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "http://localhost:8787/sse"
+      ]
+    }
+  }
+}
+```
+
+Restart Claude Desktop and the OpenNeuro tools will become available.
+
+### Example Queries
+
+The server provides an `openneuro_graphql_query` tool. Here are some example GraphQL queries:
+
+**Get dataset information:**
+```graphql
+{
+  dataset(id: "ds000224") {
+    id
+    name
+    description
+    created
+  }
+}
+```
+
+**List files in a snapshot:**
+```graphql
+{
+  snapshot(datasetId: "ds000001", tag: "1.0.0") {
+    files {
+      filename
+      size
+    }
+  }
+}
+```
+
+**Schema introspection:**
+```graphql
+{
+  __schema {
+    queryType {
+      name
+      fields {
+        name
+        description
+      }
+    }
+  }
+}
+``` 
