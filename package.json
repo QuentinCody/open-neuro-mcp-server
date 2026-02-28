@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --port 8799",
     "format": "biome format --write",
     "lint:fix": "biome lint --fix",
     "start": "wrangler dev",
