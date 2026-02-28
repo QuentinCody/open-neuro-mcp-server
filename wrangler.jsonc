@@ -22,6 +22,9 @@
 			}
 		]
 	},
+	"alias": {
+		"ai": "./src/ai-stub.ts"
+	},
 	"observability": {
 		"enabled": true
 	}
