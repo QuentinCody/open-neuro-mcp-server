@@ -2,6 +2,12 @@ import { McpAgent } from "agents/mcp"; // Assuming McpAgent is available via thi
                                         // This might be a project-local base class or an alias to an SDK import.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { shouldStage, stageToDoAndRespond } from "@bio-mcp/shared/staging/utils";
+import { registerQueryData } from "./tools/query-data";
+import { registerGetSchema } from "./tools/get-schema";
+import { OpenNeuroDataDO } from "./do";
+
+export { OpenNeuroDataDO };
 
 // Define our OpenNeuro MCP agent
 export class OpenNeuroMCP extends McpAgent {
@@ -17,20 +23,29 @@ export class OpenNeuroMCP extends McpAgent {
 	async init() {
 		console.error("OpenNeuro MCP Server initialized.");
 
+		const env = this.env as unknown as { OPENNEURO_DATA_DO?: DurableObjectNamespace };
+
+		// Register query_data and get_schema tools for staged data access
+		registerQueryData(this.server, env);
+		registerGetSchema(this.server, env);
+
 		// Register the GraphQL execution tool
 		this.server.tool(
 			"openneuro_graphql_query",
-			`Executes GraphQL queries against OpenNeuro API (https://openneuro.org/crn/graphql) for neuroimaging datasets (MRI, MEG, EEG). 
-Query dataset info, snapshot details, file listings, etc. 
-Example (dataset): '{ dataset(id: "ds000224") { id name } }'. 
-Example (snapshot files): '{ snapshot(datasetId: "ds000001", tag: "1.0.0") { files { filename size } } }'. 
-For directory contents, use 'tree' arg with dir ID. 
-IMPORTANT: Before any data query/mutation, ALWAYS run introspection queries (e.g., '{ __schema { queryType { name } types { name fields { name } } } }') to confirm all target fields/operations are in the schema. This prevents errors from schema changes. 
+			`Executes GraphQL queries against OpenNeuro API (https://openneuro.org/crn/graphql) for neuroimaging datasets (MRI, MEG, EEG).
+Query dataset info, snapshot details, file listings, etc.
+Example (dataset list): '{ datasets(first: 5, orderBy: { created: descending }) { edges { node { id name created } } } }'.
+Example (single dataset): '{ dataset(id: "ds000224") { id name created } }'.
+Example (snapshot files): '{ snapshot(datasetId: "ds000001", tag: "1.0.0") { files { filename size } } }'.
+SCALAR FIELDS: 'created' and 'modified' are DateTime scalars — use bare 'created', NEVER 'created { date }' (that causes "must not have a selection since it's a scalar" errors).
+For directory contents, use 'tree' arg with dir ID.
+IMPORTANT: Before any data query/mutation, ALWAYS run introspection queries (e.g., '{ __schema { queryType { name } types { name fields { name } } } }') to confirm all target fields/operations are in the schema. This prevents errors from schema changes.
 If a query fails, re-check syntax & re-introspect. Refer to API docs (schema at endpoint) for details.`,
 			{
 				query: z.string().describe(
 					"The GraphQL query string to execute against the OpenNeuro GraphQL API (https://openneuro.org/crn/graphql). " +
-					"Example: '{ dataset(id: \"ds000224\") { id name } }'. " +
+					"Example: '{ dataset(id: \"ds000224\") { id name created } }'. " +
+					"NOTE: 'created' and 'modified' are DateTime scalars — use them bare (e.g., 'created'), never as objects (e.g., 'created { date }' will error). " +
 					"Use introspection queries like '{ __schema { queryType { name } types { name kind } } }' to discover the schema. "
 				),
 				variables: z.record(z.any()).optional().describe(
@@ -42,14 +57,44 @@ If a query fails, re-check syntax & re-introspect. Refer to API docs (schema at 
 				if (variables) {
 					console.error(`With variables: ${JSON.stringify(variables).slice(0,150)}...`);
 				}
-				
+
 				const result = await this.executeOpenNeuroGraphQLQuery(query, variables);
-				
-				return { 
-					content: [{ 
-						type: "text", 
+
+				// Auto-stage large responses into Durable Object SQLite
+				const resultJson = JSON.stringify(result);
+				if (shouldStage(resultJson.length) && env?.OPENNEURO_DATA_DO) {
+					try {
+						const staged = await stageToDoAndRespond(
+							result,
+							env.OPENNEURO_DATA_DO as any,
+							"openneuro",
+							undefined,
+							undefined,
+							"openneuro",
+						);
+						const stagedPayload = {
+							staged: true,
+							data_access_id: staged.dataAccessId,
+							tables_created: staged.tablesCreated,
+							total_rows: staged.totalRows,
+							schema: staged.schema,
+							message: `Large response staged. Use openneuro_query_data with data_access_id '${staged.dataAccessId}' to query the data, or openneuro_get_schema to inspect tables.`,
+							_staging: staged._staging,
+						};
+						return {
+							content: [{ type: "text", text: JSON.stringify(stagedPayload) }],
+							structuredContent: stagedPayload,
+						};
+					} catch (stageErr) {
+						console.error(`Auto-staging failed, returning inline: ${stageErr instanceof Error ? stageErr.message : String(stageErr)}`);
+					}
+				}
+
+				return {
+					content: [{
+						type: "text",
 						// Pretty print JSON for easier reading by humans, and parsable by LLMs.
-						text: JSON.stringify(result, null, 2) 
+						text: resultJson
 					}]
 				};
 			}
@@ -133,11 +178,10 @@ If a query fails, re-check syntax & re-introspect. Refer to API docs (schema at 
 	}}
 
 // Define the Env interface for environment variables.
-// For this server, no specific environment variables are strictly needed for basic OpenNeuro API access.
 interface Env {
 	MCP_HOST?: string; // Standard MCP env var
 	MCP_PORT?: string; // Standard MCP env var
-	// OPENNEURO_API_KEY?: string; // If an API key were needed, it would be defined here
+	OPENNEURO_DATA_DO?: DurableObjectNamespace; // Durable Object for staging large responses
 }
 
 // Dummy ExecutionContext for type compatibility, usually provided by the runtime environment.
@@ -153,13 +197,13 @@ export default {
 
 		// Streamable HTTP transport (MCP 2025-11-25 spec)
 		if (url.pathname.startsWith("/mcp")) {
-			return OpenNeuroMCP.serve("/mcp").fetch(request, env, ctx);
+			return OpenNeuroMCP.serve("/mcp", { binding: "MCP_OBJECT" }).fetch(request, env, ctx);
 		}
 
 		// SSE transport (legacy, kept for backward compatibility)
 		if (url.pathname === "/sse" || url.pathname.startsWith("/sse/")) {
 			// @ts-ignore
-			return OpenNeuroMCP.serveSSE("/sse").fetch(request, env, ctx);
+			return OpenNeuroMCP.serveSSE("/sse", { binding: "MCP_OBJECT" }).fetch(request, env, ctx);
 		}
 
 		// Fallback for unhandled paths
